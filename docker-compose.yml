@@ -47,7 +47,7 @@ services:
       retries: 5
     restart: always
   # Using Minio as an S3 storage
-  s3:
+  minio:
     image: minio/minio
     volumes:
       - minio:/data
@@ -57,6 +57,8 @@ services:
       MINIO_ACCESS_KEY: 00e1b8e6fb0f3958
       MINIO_SECRET_KEY: 89446611d72957f56efcfeb8f8cc375265d41d6d21f0a126ed9cb611b2521321
       MINIO_BROWSER: "off"
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: really_secret_pass_with_should_be_touched
     command: server --address 0.0.0.0:9000 /data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://0.0.0.0:9000/minio/health/live"]
@@ -68,22 +70,12 @@ services:
   # the actual wiki
   wiki:
     image: outlinewiki/outline:latest
-    command: sh -c "yarn sequelize:migrate --env production-ssl-disabled && yarn start"
+    command: sh -c "yarn sequelize:migrate --env production-ssl-disabled && yarn start --env production-ssl-disabled"
     environment:
       SECRET_KEY: aa85fed80f008c1d98b65c29ab8dbf828de0d947a2586beb4cc8f219c47ef706
       UTILS_SECRET: bb48222830bb69a0e10a416f03182905399168719023f2980a201d768a8de6b6
       URL: http://localhost:3000
       PORT: 3000
-      # To configure Google auth, you'll need to create an OAuth Client ID at
-      # => https://console.cloud.google.com/apis/credentials
-      #
-      # When configuring the Client ID, add an Authorized redirect URI:
-      # https://<your Outline URL>/auth/google.callback
-      GOOGLE_CLIENT_ID:
-      GOOGLE_CLIENT_SECRET:
-      # Comma separated list of domains to be allowed (optional)
-      # If not set, all Google apps domains are allowed by default
-      GOOGLE_ALLOWED_DOMAINS:
       # Databases:
       DATABASE_URL: postgres://outline:pass@postgres:5432/outline
       DATABASE_URL_TEST: postgres://outline:pass@postgres:5432/outline-test
@@ -91,19 +83,12 @@ services:
       # S3 Storage specific:
       AWS_ACCESS_KEY_ID: 00e1b8e6fb0f3958
       AWS_SECRET_ACCESS_KEY: 89446611d72957f56efcfeb8f8cc375265d41d6d21f0a126ed9cb611b2521321
-      AWS_S3_UPLOAD_BUCKET_URL: http://s3:4569
+      AWS_S3_UPLOAD_BUCKET_URL: http://minio:4569
       AWS_S3_UPLOAD_BUCKET_NAME: outline
+      AWS_REGION: xx-xxxx-x
       AWS_S3_UPLOAD_MAX_SIZE: 26214400
-      # Emails configuration (optional):
-      SMTP_HOST: 
-      SMTP_PORT: 
-      SMTP_USERNAME: 
-      SMTP_PASSWORD: 
-      SMTP_FROM_EMAIL: 
-      SMTP_REPLY_EMAIL:
-      # Customization:
-      TEAM_LOGO: https://example.com/images/logo.png
-      DEFAULT_LANGUAGE: de_DE
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      AWS_S3_ACL: private
     restart: always
     networks:
       - internal
@@ -112,14 +97,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      s3:
+      minio:
         condition: service_healthy
 
   # nginx is working as a proxy
   proxy:
     image: staticfloat/nginx-certbot
     ports:
-      - 80:80/tcp
+      - 8081:80/tcp
       - 443:443/tcp
     networks:
       - internal
