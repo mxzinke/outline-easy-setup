@@ -1,48 +1,133 @@
-version: "3"
+version: "3.5"
+
+networks:
+  # because we have an internal network, the credentials doesn't matter
+  internal:
+    name: outline-internal
+    external: false
+
+volumes:
+    letsencrypt:
+      name: outline-https-certs
+      driver: local
+    minio:
+      name: outline-s3
+      driver: local
+    pgdata:
+      name: outline-pgdata
+      driver: local
+
 services:
+  # Redis for cache and communication
   redis:
     image: redis
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     restart: always
+  # Postgres as main database
   postgres:
     image: postgres
+    networks:
+      - internal
     environment:
-      POSTGRES_USER: user
+      POSTGRES_USER: outline
       POSTGRES_PASSWORD: pass
       POSTGRES_DB: outline
     volumes:
-      - ./data/pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: always
-  minio:
+  # Using Minio as an S3 storage
+  s3:
     image: minio/minio
     volumes:
-      - ./data/minio_root:/minio_root:z
-      - ./data/certs:/root/.minio/certs:z
-    command: "minio server /minio_root"
-    env_file: ./env.minio
+      - minio:/data
+    networks:
+      - internal
+    environment:
+      MINIO_ACCESS_KEY: 00e1b8e6fb0f3958
+      MINIO_SECRET_KEY: 89446611d72957f56efcfeb8f8cc375265d41d6d21f0a126ed9cb611b2521321
+      MINIO_BROWSER: "off"
+    command: server --address 0.0.0.0:9000 /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:9000/minio/health/live"]
+      interval: 1m30s
+      timeout: 20s
+      retries: 3
     restart: always
-  outline:
+
+  # the actual wiki
+  wiki:
     image: outlinewiki/outline:latest
     command: sh -c "yarn sequelize:migrate --env production-ssl-disabled && yarn start"
     environment:
-      - DATABASE_URL=postgres://user:pass@postgres:5432/outline
-      - DATABASE_URL_TEST=postgres://user:pass@postgres:5432/outline-test
-      - REDIS_URL=redis://redis:6379
-    env_file:
-      - ./env.outline
-      - ./env.slack
+      SECRET_KEY: aa85fed80f008c1d98b65c29ab8dbf828de0d947a2586beb4cc8f219c47ef706
+      UTILS_SECRET: bb48222830bb69a0e10a416f03182905399168719023f2980a201d768a8de6b6
+      URL: http://localhost:3000
+      PORT: 3000
+      # To configure Google auth, you'll need to create an OAuth Client ID at
+      # => https://console.cloud.google.com/apis/credentials
+      #
+      # When configuring the Client ID, add an Authorized redirect URI:
+      # https://<your Outline URL>/auth/google.callback
+      GOOGLE_CLIENT_ID:
+      GOOGLE_CLIENT_SECRET:
+      # Comma separated list of domains to be allowed (optional)
+      # If not set, all Google apps domains are allowed by default
+      GOOGLE_ALLOWED_DOMAINS:
+      # Databases:
+      DATABASE_URL: postgres://outline:pass@postgres:5432/outline
+      DATABASE_URL_TEST: postgres://outline:pass@postgres:5432/outline-test
+      REDIS_URL: redis://redis:6379
+      # S3 Storage specific:
+      AWS_ACCESS_KEY_ID: 00e1b8e6fb0f3958
+      AWS_SECRET_ACCESS_KEY: 89446611d72957f56efcfeb8f8cc375265d41d6d21f0a126ed9cb611b2521321
+      AWS_S3_UPLOAD_BUCKET_URL: http://s3:4569
+      AWS_S3_UPLOAD_BUCKET_NAME: outline
+      AWS_S3_UPLOAD_MAX_SIZE: 26214400
+      # Emails configuration (optional):
+      SMTP_HOST: 
+      SMTP_PORT: 
+      SMTP_USERNAME: 
+      SMTP_PASSWORD: 
+      SMTP_FROM_EMAIL: 
+      SMTP_REPLY_EMAIL:
+      # Customization:
+      TEAM_LOGO: https://example.com/images/logo.png
+      DEFAULT_LANGUAGE: de_DE
     restart: always
+    networks:
+      - internal
     depends_on:
-      - postgres
-      - redis
-      - minio
-  nginx:
-    image: nginx
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+
+  # nginx is working as a proxy
+  proxy:
+    image: staticfloat/nginx-certbot
     ports:
-      - 8888:80
-      - 4443:443
+      - 80:80/tcp
+      - 443:443/tcp
+    networks:
+      - internal
+    environment:
+      CERTBOT_EMAIL: owner@example.com
     volumes:
-      - ./data/nginx/:/etc/nginx/conf.d/:z
-      - ./data/certs/:/etc/ssl/certs/:z
+      - ./conf.d:/etc/nginx/user.conf.d:ro
+      - letsencrypt:/etc/letsencrypt       
     restart: always
     depends_on:
-      - outline
+      - wiki
